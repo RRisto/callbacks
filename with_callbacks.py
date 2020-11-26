@@ -100,8 +100,7 @@ def validate_epoch(model, valid_dl):
 
 # callbacks
 class Callback():
-    def begin_fit(self, learn):
-        self.learn = learn
+    def begin_fit(self):
         return True
 
     def after_fit(self): return True
@@ -140,8 +139,7 @@ class BatchCounter(Callback):
 
 
 class TimeCheck(Callback):
-    def begin_fit(self, learn):
-        self.learn = learn
+    def begin_fit(self):
         self.epoch_counter = 1
         return True
 
@@ -185,8 +183,7 @@ class PrintValidLoss(Callback):
 
 
 class GetValAcc(Callback):
-    def begin_fit(self, learn):
-        self.learn = learn
+    def begin_fit(self):
         self.in_train = True
         return True
 
@@ -229,11 +226,16 @@ class CallbackHandler():
     def __init__(self, cbs=None):
         self.cbs = cbs if cbs else []
 
-    def begin_fit(self, learn):
-        self.learn, self.in_train = learn, True
+    def set_learn(self, learn):
+        self.learn = learn
+        for cb in self.cbs:
+            cb.learn = self.learn
+
+    def begin_fit(self):
+        self.in_train = True
         self.learn.stop = False
         res = True
-        for cb in self.cbs: res = res and cb.begin_fit(learn)
+        for cb in self.cbs: res = res and cb.begin_fit()
         return res
 
     def after_fit(self):
@@ -303,25 +305,27 @@ def all_batches(dl, cb, learn):
         if cb.do_stop(): return
 
 
-def fit(epochs, learn, cb):
-    if not cb.begin_fit(learn): return
+def fit(epochs, learn):
+    if not learn.cb.begin_fit(): return
     for epoch in range(epochs):
-        if not cb.begin_epoch(epoch): continue
-        all_batches(learn.train_dl, cb, learn)  ###
+        if not learn.cb.begin_epoch(epoch): continue
+        all_batches(learn.train_dl, learn.cb, learn)  ###
 
-        if cb.begin_validate():
-            with torch.no_grad(): all_batches(learn.valid_dl, cb, learn)
-        if cb.do_stop() or not cb.after_epoch(): break
-    cb.after_fit()
+        if learn.cb.begin_validate():
+            with torch.no_grad(): all_batches(learn.valid_dl, learn.cb, learn)
+        if learn.cb.do_stop() or not learn.cb.after_epoch(): break
+    learn.cb.after_fit()
 
 
 class Learner:
-    def __init__(self, model, loss_func, opt, train_dl, valid_dl):
+    def __init__(self, model, loss_func, opt, train_dl, valid_dl, cb):
         self.model = model
         self.loss_func = loss_func
         self.opt = opt
         self.train_dl = train_dl
         self.valid_dl = valid_dl
+        self.cb = cb
+        self.cb.set_learn(self)
 
 
 train_dset, valid_dset = get_dsets(path)
@@ -338,8 +342,10 @@ simple_net = nn.Sequential(
 lr = 1e-3
 opt = BasicOptim(simple_net.parameters(), lr)
 
-learner = Learner(simple_net, mnist_loss, opt, dl, valid_dl)
+learner = Learner(simple_net, mnist_loss, opt, dl, valid_dl,
+                  cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
 
 # fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), PrintValidLoss()]))
-fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
+# fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
+fit(10, learn=learner)
 # fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss()]))

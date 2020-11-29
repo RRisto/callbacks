@@ -5,6 +5,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from pathlib import Path
 import numpy as np
+import matplotlib.pyplot as plt
 import time
 
 
@@ -50,21 +51,6 @@ def get_dsets(root_path, nums=[3, 7]):
     return train_dset, valid_dset
 
 
-## Data
-path = Path('data')
-train_dset, valid_dset = get_dsets(path)
-
-dl = DataLoader(train_dset, batch_size=256)
-valid_dl = DataLoader(valid_dset, batch_size=256)
-
-# model loss func, opt
-simple_net = nn.Sequential(
-    nn.Linear(28 * 28, 30),
-    nn.ReLU(),
-    nn.Linear(30, 1)
-)
-
-
 def mnist_loss(predictions, targets):
     predictions = predictions.sigmoid()
     return torch.where(targets == 1, 1 - predictions, predictions).mean()
@@ -79,10 +65,6 @@ class BasicOptim:
 
     def zero_grad(self, *args, **kwargs):
         for p in self.params: p.grad = None
-
-
-lr = 1e-3
-opt = BasicOptim(simple_net.parameters(), lr)
 
 
 def batch_accuracy(xb, yb):
@@ -328,27 +310,162 @@ class Learner:
         self.cb.set_learn(self)
 
 
+## lr finder
+
+def annealing_linear(start, end, pct: float):
+    "Linearly anneal from `start` to `end` as pct goes from 0.0 to 1.0."
+    return start + pct * (end - start)
+
+
+def annealing_exp(start, end, pct: float):
+    "Exponentially anneal from `start` to `end` as pct goes from 0.0 to 1.0."
+    return start * (end / start) ** pct
+
+
+def annealing_no(start, end, pct: float):
+    "No annealing, always return `start`."
+    return
+
+
+def is_tuple(x) -> bool: return isinstance(x, tuple)
+
+
+def is_listy(x) -> bool: return isinstance(x, (tuple, list))
+
+
+class Scheduler():
+    "Used to \"step\" from start,end (`vals`) over `n_iter` iterations on a schedule defined by `func`"
+
+    def __init__(self, vals, n_iter: int, func=None):
+        self.start, self.end = (vals[0], vals[1]) if is_tuple(vals) else (vals, 0)
+        self.n_iter = max(1, n_iter)
+        if func is None:
+            self.func = annealing_linear if is_tuple(vals) else annealing_no
+        else:
+            self.func = func
+        self.n = 0
+
+    def restart(self):
+        self.n = 0
+
+    def step(self):
+        "Return next value along annealed schedule."
+        self.n += 1
+        return self.func(self.start, self.end, self.n / self.n_iter)
+
+    @property
+    def is_done(self) -> bool:
+        "Return `True` if schedule completed."
+        return self.n >= self.n_iter
+
+
+class LRFinder(Callback):
+    "Causes `learn` to go on a mock training from `start_lr` to `end_lr` for `num_it` iterations."
+
+    def __init__(self, start_lr: float = 1e-7, end_lr: float = 10, num_it: int = 100,
+                 stop_div: bool = True, annealing_func=annealing_linear, beta=.98):
+        self.stop_div = stop_div
+        self.sched = Scheduler((start_lr, end_lr), num_it, annealing_func)
+        self.lrs = []
+        self.losses = []
+        self.beta = beta
+        self.avg_loss = 0
+
+    def begin_fit(self):
+        "Initialize optimizer and learner hyperparameters."
+        # setattr(pbar, 'clean_on_interrupt', True)
+        # self.learn.save('tmp')
+        self.iteration = 1
+        self.opt = self.learn.opt
+        self.opt.lr = self.sched.start
+        self.stop, self.best_loss = False, 0.
+        return {'skip_validate': True}
+
+    def after_loss(self, loss, **kwargs):
+        "Determine if loss has runaway and we should stop."
+        self.avg_loss = self.beta * self.avg_loss + (1 - self.beta) * loss.item()
+        smooth_loss = self.avg_loss / (1 - self.beta ** self.iteration)
+
+        if self.iteration == 0 or smooth_loss < self.best_loss: self.best_loss = smooth_loss
+        self.lrs.append(self.opt.lr)
+        self.losses.append(smooth_loss)
+        self.opt.lr = self.sched.step()
+        if self.sched.is_done or (self.stop_div and (smooth_loss > 4 * self.best_loss or torch.isnan(smooth_loss))):
+            # We use the smoothed loss to decide on the stopping since it's less shaky.
+            if not self.stop: self.stop = self.iteration
+            return False
+        self.iteration += 1
+        return True
+
+    def after_epoch(self, **kwargs):
+        if self.stop: return False
+
+    def after_fit(self, **kwargs):
+        "Cleanup learn model weights disturbed during LRFinder exploration."
+        # self.learn.load('tmp', purge=False)
+        if hasattr(self.learn.model, 'reset'): self.learn.model.reset()
+        # for cb in self.cb:
+        #     if hasattr(cb, 'reset'): cb.reset()
+        print('LR Finder is complete, type {learner_name}.recorder.plot() to see the graph.')
+        # df_lr_loss = pd.DataFrame({'loss': self.losses[10:-5], 'lr': np.log(self.lrs[10:-5])})
+        # df_lr_loss = df_lr_loss.set_index('lr')
+        # df_lr_loss.loss.plot()
+        # print(self.losses[10:-5])
+        # print(self.lrs[10:-5])
+
+        plt.plot(np.log10(self.lrs[5:-5]), self.losses[5:-5])
+        plt.xticks(np.log10(self.lrs[5:-5]), self.lrs[5:-5])
+       # ax = plt.gca()
+        #ax.get_xaxis().set_major_formatter(plt.LogFormatter(10, labelOnlyBase=False))
+        plt.show()
+
+
+# total_batches = epoch * num_batch
+# if total_batches - self.stop > 10:
+#     print(
+#         f"Best loss at batch #{self.stop}/{total_batches}, may consider .plot(skip_end={total_batches - self.stop + 3})")
+
+
+def lr_find(start_lr=1e-7, end_lr=1, num_it: int = 49, stop_div: bool = True, wd: float = None,
+            annealing_func=annealing_exp):
+    "Explore lr from `start_lr` to `end_lr` over `num_it` iterations in `learn`. If `stop_div`, stops when loss diverges."
+    # start_lr = learn.lr_range(start_lr)
+    # start_lr = np.array(start_lr) if is_listy(start_lr) else start_lr
+    # end_lr = learn.lr_range(end_lr)
+    # end_lr = np.array(end_lr) if is_listy(end_lr) else end_lr
+    opt = BasicOptim(simple_net.parameters(), start_lr)
+    cb = LRFinder(start_lr, end_lr, num_it, stop_div, annealing_func=annealing_func)
+    # todo make dynamic
+    learner = Learner(simple_net, mnist_loss, opt, dl, valid_dl, cb=CallbackHandler([cb]))
+    epochs = int(np.ceil(num_it / len(learner.train_dl)))
+    fit(epochs, learn=learner)
+
+
+# run
+
+## Data
+path = Path('data')
 train_dset, valid_dset = get_dsets(path)
 
-dl = DataLoader(train_dset, batch_size=256)
+dl = DataLoader(train_dset, batch_size=64)
 valid_dl = DataLoader(valid_dset, batch_size=256)
 
+# model loss func, opt
 simple_net = nn.Sequential(
     nn.Linear(28 * 28, 30),
     nn.ReLU(),
     nn.Linear(30, 1)
 )
 
-lr = 1e-3
-opt = BasicOptim(simple_net.parameters(), lr)
+# lr = 1e-7
+# opt = BasicOptim(simple_net.parameters(), lr)
 
-learner = Learner(simple_net, mnist_loss, opt, dl, valid_dl,
-                  cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
+# learner = Learner(simple_net, mnist_loss, opt, dl, valid_dl,
+#                   cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
 
 # fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), PrintValidLoss()]))
 # fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
-fit(10, learn=learner)
+# fit(10, learn=learner)
+# lr_find(start_lr=1e-7, end_lr=10, num_it=100, stop_div=True, wd=None)
 
-
-# fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss()]))
-
+lr_find(start_lr=1e-7, end_lr=1, num_it=49, stop_div=True, wd=None, annealing_func=annealing_exp)

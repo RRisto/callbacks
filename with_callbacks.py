@@ -328,27 +328,21 @@ class Learner:
         self.cb.set_learn(self)
 
 
-train_dset, valid_dset = get_dsets(path)
+if __name__ == '__main__':
+    train_dset, valid_dset = get_dsets(path)
 
-dl = DataLoader(train_dset, batch_size=256)
-valid_dl = DataLoader(valid_dset, batch_size=256)
+    dl = DataLoader(train_dset, batch_size=256)
+    valid_dl = DataLoader(valid_dset, batch_size=256)
 
-simple_net = nn.Sequential(
-    nn.Linear(28 * 28, 30),
-    nn.ReLU(),
-    nn.Linear(30, 1)
-)
+    simple_net = nn.Sequential(
+        nn.Linear(28 * 28, 30),
+        nn.ReLU(),
+        nn.Linear(30, 1))
 
-lr = 1e-3
-opt = BasicOptim(simple_net.parameters(), lr)
+    lr = 1e-3
+    opt = BasicOptim(simple_net.parameters(), lr)
 
-learner = Learner(simple_net, mnist_loss, opt, dl, valid_dl,
-                  cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
+    learner = Learner(simple_net, mnist_loss, opt, dl, valid_dl,
+                      cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
 
-# fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), PrintValidLoss()]))
-# fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss(), GetValAcc()]))
-fit(10, learn=learner)
-
-
-# fit(10, learn=learner, cb=CallbackHandler([BatchCounter(), TimeCheck(), PrintLoss()]))
-
+    fit(10, learn=learner)

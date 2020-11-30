@@ -119,4 +119,5 @@ def fit(epochs, train_dl, valid_dl, model, loss_func, opt):
             f"{epoch} loss train: {round(loss_train_value, 4)} valid acc: {round(acc_valid, 4)}")
 
 
-fit(20, dl, valid_dl, simple_net, mnist_loss, opt)
+if __name__ == '__main__':
+    fit(20, dl, valid_dl, simple_net, mnist_loss, opt)

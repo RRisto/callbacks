@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import torch
 import numpy as np
 from torch import nn
 from torch.utils.data import DataLoader
@@ -27,38 +26,48 @@ class LRFinder(Callback):
         self.losses = []
         self.beta = beta
         self.avg_loss = 0
-        self.iteration = 1
 
     def begin_fit(self):
         "Initialize optimizer and learner hyperparameters."
         self.opt = self.learn.opt
         self.opt.lr = self.sched.start
         self.stop, self.best_loss = False, 0.
+        self.best_lr = 0
+        self.iteration = 0
         return True
 
     def after_loss(self, loss):
         "Determine if loss has runaway and we should stop."
         self.avg_loss = self.beta * self.avg_loss + (1 - self.beta) * loss.item()
-        smooth_loss = self.avg_loss / (1 - self.beta ** self.iteration)
+        smooth_loss = self.avg_loss / (1 - self.beta ** (self.iteration + 1))
 
-        if self.iteration == 0 or smooth_loss < self.best_loss: self.best_loss = smooth_loss
+        if self.iteration == 0 or smooth_loss < self.best_loss:
+            self.best_loss = smooth_loss
+            self.best_lr = self.opt.lr
         self.lrs.append(self.opt.lr)
         self.losses.append(smooth_loss)
-        self.opt.lr = self.sched.step()
         self.iteration += 1
-        if self.sched.is_done or (self.stop_div and (smooth_loss > 4 * self.best_loss or torch.isnan(smooth_loss))):
+        if self.sched.is_done or (self.stop_div and (smooth_loss > 4 * self.best_loss or np.isnan(smooth_loss))):
             # We use the smoothed loss to decide on the stopping since it's less shaky.
-            if not self.stop: self.stop = self.iteration
+            if not self.stop:
+                self.stop = self.iteration
             return False
         return True
 
+    def after_step(self):
+        self.opt.lr = self.sched.step()
+        return True
+
     def after_epoch(self):
-        if self.stop: return False
+        if self.stop:
+            return False
 
     def after_fit(self):
         plt.plot(self.lrs[5:-5], self.losses[5:-5])
         plt.xscale('log')
         plt.show()
+        print(f'Best loss {round(self.best_loss, 3)}')
+        print(f'Best lr {round(self.best_lr, 3)}')
 
 
 def lr_find(start_lr=1e-7, end_lr=10, num_it: int = 49, stop_div: bool = True, wd: float = None,
@@ -83,4 +92,4 @@ if __name__ == '__main__':
         nn.ReLU(),
         nn.Linear(30, 1))
 
-    lr_find(start_lr=1e-7, end_lr=5, num_it=len(dl), stop_div=True, wd=None, annealing_func=annealing_exp)
+    lr_find(start_lr=1e-5, end_lr=10, num_it=len(dl), stop_div=True, wd=None, annealing_func=annealing_exp)
